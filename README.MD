@@ -72,6 +72,58 @@ CX disminuyó de 4 a 0 y AX acumuló 2 en cada iteración hasta valer 0008. Cuan
 
 #### Análisis del código máquina (Paso 8)
 
-El comando `D CS:100 L0D` mostró los 13 bytes del programa:
+El comando `D CS:100 L0D` mostró los 13 bytes del programa con bucle:
 `B8 00 00 B9 04 00 05 02 00 E2 FB CD 20`
-Las instrucciones `MOV AX,imm16`, `MOV CX,imm16` y `ADD AX,imm16` ocupan 3 bytes cada una, mientras que `LOOP` e `INT 20` ocupan 2 bytes cada una.
+
+| Instrucción | Bytes    | Tamaño  |
+| ----------- | -------- | ------- |
+| MOV AX,0000 | B8 00 00 | 3 bytes |
+| MOV CX,0004 | B9 04 00 | 3 bytes |
+| ADD AX,0002 | 05 02 00 | 3 bytes |
+| LOOP 0106   | E2 FB    | 2 bytes |
+| INT 20      | CD 20    | 2 bytes |
+
+Las instrucciones con operando inmediato de 16 bits ocupan 3 bytes (opcode más dos bytes en little-endian), mientras que LOOP e INT 20 ocupan 2. El total es de 13 bytes. En LOOP, E2 es el opcode y FB es el desplazamiento relativo con signo: -5, obtenido de 0106 menos 010B, que es la dirección de la instrucción siguiente.
+
+### Checkpoint 3: Bucle equivalente con DEC/JNZ
+
+![Traza DEC/JNZ](capturas/parte%202/CP3_traza_dec_jnz.png)
+
+| Iteración | Instrucción | AX después | CX después | IP siguiente | ¿JNZ salta? |
+| --------- | ----------- | ---------- | ---------- | ------------ | ----------- |
+| –         | MOV AX,0000 | 0000       | –          | 0203         | –           |
+| –         | MOV CX,0004 | 0000       | 0004       | 0206         | –           |
+| 1         | ADD AX,0002 | 0002       | 0004       | 0209         | –           |
+| 1         | DEC CX      | 0002       | 0003       | 020A         | –           |
+| 1         | JNZ 0206    | 0002       | 0003       | 0206         | Sí (ZF=0)   |
+| 2         | ADD AX,0002 | 0004       | 0003       | 0209         | –           |
+| 2         | DEC CX      | 0004       | 0002       | 020A         | –           |
+| 2         | JNZ 0206    | 0004       | 0002       | 0206         | Sí (ZF=0)   |
+| 3         | ADD AX,0002 | 0006       | 0002       | 0209         | –           |
+| 3         | DEC CX      | 0006       | 0001       | 020A         | –           |
+| 3         | JNZ 0206    | 0006       | 0001       | 0206         | Sí (ZF=0)   |
+| 4         | ADD AX,0002 | 0008       | 0001       | 0209         | –           |
+| 4         | DEC CX      | 0008       | 0000       | 020A         | –           |
+| 4         | JNZ 0206    | 0008       | 0000       | 020C         | No (ZF=1)   |
+| –         | INT 20      | 0008       | 0000       | –            | –           |
+
+#### Comparación de instrucciones ejecutadas
+
+| Versión | Bytes del control del bucle | Invocaciones de T |
+| ------- | --------------------------- | ----------------- |
+| LOOP    | 2 (`E2 FB`)                 | 11                |
+| DEC/JNZ | 3 (`49` + `75 FA`)          | 15                |
+
+Ambas versiones terminaron con AX = 0008. La versión con DEC/JNZ ejecuta cuatro instrucciones más, una por iteración. Con `G 20C` se obtuvo el mismo resultado final sin pasos intermedios.
+
+### Decisión técnica 3: LOOP frente a DEC/JNZ (Paso 10)
+
+Para un bucle contador simple en el que CX no se usa con otro propósito, se recomienda LOOP. En bytes de código máquina, LOOP 0106 ocupa 2 bytes (E2 FB), mientras que DEC CX y JNZ 0206 ocupan 3 (49 y 75 FA). En instrucciones por iteración, LOOP requiere extraer dos (ADD y LOOP) y DEC/JNZ tres (ADD, DEC y JNZ), lo que se observó en las trazas: 11 invocaciones de T frente a 15. Por tanto, LOOP reduce el tamaño del programa y el número de fetch por iteración. DEC/JNZ sería preferible si el cuerpo del bucle necesitara reutilizar CX en otra operación aritmética, o si la salida dependiera de una condición evaluada con CMP y no solo de que CX sea distinto de cero. Además, DEC actualiza banderas como ZF, mientras que LOOP no modifica ninguna. Con U, sin ejecutar nada, se compara el tamaño: U 100 10D muestra E2FB (2 bytes) y U 200 20D muestra 49 y 75FA (3 bytes) para el mismo control de bucle.
+
+### Decisión técnica 4: T frente a G (Paso 12)
+
+Con 100 iteraciones, G 20C es más práctico que T porque ejecuta el programa a velocidad completa hasta la dirección 020C con un solo comando, mientras que T exigiría más de 300 invocaciones manuales en el bucle DEC/JNZ (2 de inicialización, 100 × 3 instrucciones y 1 de terminación). Al usar G se pierde la información intermedia: no se observan los valores de AX, CX, IP ni de las banderas después de cada instrucción, solo el estado final en el punto de parada. T fue indispensable en los Pasos 4, 7 y 11, porque las tablas de traza exigen registrar el estado tras cada instrucción, y esa granularidad solo la ofrece T. Después de G 20C, el comando R muestra los registros y permite confirmar que AX vale 0008 sin haber visto ningún paso intermedio.
+
+## Conclusiones
+
+El laboratorio permitió observar cómo el procesador interpreta los bytes en memoria como instrucciones, y cómo cada mnemónico se traduce a un código máquina concreto: los inmediatos de 16 bits se almacenan en little-endian y los saltos cortos usan desplazamientos relativos de 8 bits con signo. Se comprobó que los comandos de DEBUG tienen propósitos distintos: D y U solo leen, mientras que E, F y A escriben, por lo que la elección del comando adecuado evita modificar el estado por accidente. La comparación entre LOOP y DEC/JNZ mostró que ambos son equivalentes en resultado (AX = 0008), pero LOOP es más compacto (2 bytes frente a 3) y ejecuta menos instrucciones (11 frente a 15), mientras que DEC/JNZ ofrece más flexibilidad cuando se necesitan banderas o condiciones con CMP. Por último, se concluyó que T y G son complementarios: T permite analizar el comportamiento paso a paso y G verifica rápidamente el resultado final de programas con muchas iteraciones.
